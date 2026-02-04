@@ -2,7 +2,7 @@
 
 A smart automation that visually verifies if you've remembered to put out the trash bins based on your collection schedule. It uses GenAI (OpenAI GPT-4o/Nano via `ai_task`) to analyze camera snapshots and notifies you only if the bins are missing.
 
-![Vault-Tec Waste-O-Meter](/images/waste_pipboy.jpg)
+![Vault-Tec Waste-O-Meter](/images/waste_collection.png)
 
 
 ## 🚀 How it works
