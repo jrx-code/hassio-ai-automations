@@ -1,159 +1,165 @@
-alias: "🗑️ Waste: Collection Verification"
+alias: "Waste Collection: AI Visual Verification"
 description: >-
-  Visual verification of waste bins using AI.
-
-  LOGIC:
-  1. Checks the schedule for fractions: Plastic, Paper, Glass, Bio, Mixed.
-  2. Dynamically determines the bin color to look for (e.g., "blue or brown").
-  3. Updates the camera entity to ensure a fresh image.
-  4. Performs image analysis via AI Agent.
-  5. Notifies if the bin is missing.
-
+  Visual verification of waste bin placement using AI analysis (GPT-4o/5 Vision).
+  Logic:
+  1. Detects window (Evening = Tomorrow, Morning = Today).
+  2. Identifies required bin colors and waste types.
+  3. Captures camera snapshot and refreshes proxy entity.
+  4. Performs AI analysis.
+  5. Sends notification with visual proof.
+  
+  Author: Home Assistant Architect @ JrX-Code
 triggers:
   - id: check_pm
-    alias: "⏰ Schedule: Evening (21:00)"
+    alias: "Schedule: Evening Check (21:00)"
     trigger: time
     at: "21:00:00"
   - id: check_am
-    alias: "⏰ Schedule: Morning (08:00)"
+    alias: "Schedule: Morning Check (08:00)"
     trigger: time
     at: "08:00:00"
-  - trigger: state
+  - id: check_test
+    alias: "Manual Test Trigger"
+    trigger: state
     entity_id:
-      - input_button.test_waste_verification
+      - input_button.waste_test_button # REPLACE: with your test button
     to: null
-
 conditions:
-  - alias: "🔍 Global: Maintenance Check"
+  - alias: 🔍 Sprawdź czy system nie jest w trybie serwisowym
     condition: state
-    entity_id: input_boolean.maintenance_mode
+    entity_id: input_boolean.try_maintenance
     state: "off"
-  - alias: 📅 Check if collection is Today/Tomorrow
+  - alias: "📅 Check if collection is scheduled for target day"
     condition: template
-    value_template: |
-      {{ 'tomorrow' in states('sensor.next_waste_collection')|lower or 
-         'today' in states('sensor.next_waste_collection')|lower }}
-
+    value_template: >
+      {% set day = 'tomorrow' if trigger.id == 'check_pm' else 'today' if trigger.id == 'check_am' else '' %}
+      {% set schedule_state = states('sensor.first_waste_collection') | lower %}
+      {% if day != '' %}
+        {{ day in schedule_state }}
+      {% else %}
+        {{ 'tomorrow' in schedule_state or 'today' in schedule_state }}
+      {% endif %}
 actions:
-  - alias: 🎨 Determine Bin Colors
+  - alias: "🎨 Calculate search parameters"
     variables:
-      target_colors: >
-        {% set bins = [] %}
+      # CONFIGURATION: Map your localized keywords to English logic
+      target_day: >-
+        {% if trigger.id == 'check_pm' %} tomorrow
+        {% elif trigger.id == 'check_am' %} today
+        {% else %} today
+        {% endif %}
+      
+      # Core Logic: Extract colors and fractions into a structured object
+      waste_data: >-
+        {% set d = target_day.strip() %}
+        {% set mapper = {
+          "yellow": "plastic and metal",
+          "blue": "paper",
+          "green": "glass",
+          "brown": "bio",
+          "black": "mixed waste"
+        } %}
+        {% set colors = [] %}
+        {# REPLACE: Match these sensors to your waste schedule entities #}
+        {% if states('sensor.waste_plastic')|lower is search(d) %}{% set colors = colors + ['yellow'] %}{% endif %}
+        {% if states('sensor.waste_paper')|lower is search(d) %}{% set colors = colors + ['blue'] %}{% endif %}
+        {% if states('sensor.waste_glass')|lower is search(d) %}{% set colors = colors + ['green'] %}{% endif %}
+        {% if states('sensor.waste_bio')|lower is search(d) %}{% set colors = colors + ['brown'] %}{% endif %}
+        {% if states('sensor.waste_mixed')|lower is search(d) %}{% set colors = colors + ['black'] %}{% endif %}
         
-        {# --- PLASTIC & METAL (Yellow) --- #}
-        {% if 'tomorrow' in states('sensor.waste_plastic')|lower or 'today' in states('sensor.waste_plastic')|lower %}
-          {% set bins = bins + ['yellow'] %}
-        {% endif %}
+        {% set fractions = namespace(items=[]) %}
+        {% for c in colors %}
+          {% set fractions.items = fractions.items + [mapper.get(c)] %}
+        {% endfor %}
+        
+        {{ {'colors': colors, 'fractions': fractions.items} | to_json }}
 
-        {# --- PAPER (Blue) --- #}
-        {% if 'tomorrow' in states('sensor.waste_paper')|lower or 'today' in states('sensor.waste_paper')|lower %}
-          {% set bins = bins + ['blue'] %}
-        {% endif %}
+      search_colors: "{{ (waste_data | from_json).colors | join(' or ') }}"
+      search_fractions: "{{ (waste_data | from_json).fractions | join(' and ') }}"
+      found_count: "{{ (waste_data | from_json).colors | length }}"
 
-        {# --- GLASS (Green) --- #}
-        {% if 'tomorrow' in states('sensor.waste_glass')|lower or 'today' in states('sensor.waste_glass')|lower %}
-          {% set bins = bins + ['green'] %}
-        {% endif %}
-
-        {# --- BIO (Brown) --- #}
-        {% if 'tomorrow' in states('sensor.waste_bio')|lower or 'today' in states('sensor.waste_bio')|lower %}
-          {% set bins = bins + ['brown'] %}
-        {% endif %}
-
-        {# --- MIXED (Black) --- #}
-        {% if 'tomorrow' in states('sensor.waste_mixed')|lower or 'today' in states('sensor.waste_mixed')|lower %}
-          {% set bins = bins + ['black (or grey metal)'] %}
-        {% endif %}
-
-        {{ bins | join(' or ') }}
-
-  - alias: 🛑 Stop if no colors found (Sensor Error)
-    if:
+  - if:
       - condition: template
-        value_template: "{{ target_colors | length == 0 }}"
+        value_template: "{{ found_count | int == 0 }}"
     then:
-      - stop: "No matching waste fractions found despite schedule trigger."
+      - stop: "No waste fractions identified for the current check window."
 
-  - alias: 📸 Take Snapshot
-    action: camera.snapshot
-    target:
-      entity_id: camera.driveway_camera
-    data:
-      filename: /config/www/snapshots/waste_check.jpg
+  - alias: "📸 Capture and Refresh Snapshot"
+    sequence:
+      - action: camera.snapshot
+        target:
+          entity_id: camera.driveway_high_res # REPLACE: with your camera entity
+        data:
+          filename: /config/www/snapshots/waste_check.jpg
+      - delay: 5
+      - action: homeassistant.update_entity
+        target:
+          entity_id: camera.waste_snapshot_proxy # REPLACE: with your generic camera helper
 
-  - delay:
-      seconds: 5
-
-  - alias: "🔄 Refresh Camera Entity"
-    action: homeassistant.update_entity
-    target:
-      entity_id: camera.driveway_camera_generic
-
-  - alias: "🧠 AI Analysis (Look for: {{ target_colors }})"
+  - alias: "🧠 AI Analysis"
     action: ai_task.generate_data
     data:
-      entity_id: ai_task.openai_gpt_5_nano
-      task_name: Waste Bin Verification
-      instructions: >
-        The image shows a driveway. Ignore mailboxes and permanent fixtures.
-        Your task is to verify if a trash bin has been placed out for collection.
-
-        Look for a container/bag in color: **{{ target_colors }}**.
-
-        Reply strictly according to this schema:
-        - "true" -> if you see a bin in the specified color ({{ target_colors }}).
-        - "false" -> if you DO NOT see such a bin.
-        - "uncertain" -> if the image is unclear or you are not sure.
+      entity_id: ai_task.gpt_vision_service # REPLACE: with your AI provider
+      task_name: "Waste Bin Placement Verification"
+      instructions: >-
+        Analyze the driveway image. Ignore mailboxes and static elements. 
+        Determine if a waste bin or bag in the following color is present: {{ search_colors }}.
+        Respond ONLY with: 'true' (visible), 'false' (missing), or 'uncertain' (unclear).
       attachments:
-        - media_content_id: media-source://camera/camera.driveway_camera_generic
+        - media_content_id: media-source://camera/camera.waste_snapshot_proxy
           media_content_type: image/jpeg
     response_variable: result
 
-  - alias: 🔢 Record Result (Counter)
-    choose:
-      - conditions: "{{ result.data == 'true' }}"
-        sequence:
-          - action: counter.set_value
-            target:
-              entity_id: counter.waste_verification_status
-            data:
-              value: 1
-      - conditions: "{{ result.data == 'false' }}"
-        sequence:
-          - action: counter.set_value
-            target:
-              entity_id: counter.waste_verification_status
-            data:
-              value: 2
-      - conditions: "{{ result.data == 'uncertain' }}"
-        sequence:
-          - action: counter.set_value
-            target:
-              entity_id: counter.waste_verification_status
-            data:
-              value: 3
-    default:
-      - action: counter.set_value
-        target:
-          entity_id: counter.waste_verification_status
-        data:
-          value: 5
+  - alias: "🔢 Update Status Helper"
+    action: counter.set_value
+    target:
+      entity_id: counter.waste_check_result # REPLACE: with your counter helper
+    data:
+      value: >-
+        {% if result.data == 'true' %} 1
+        {% elif result.data == 'false' %} 2
+        {% elif result.data == 'uncertain' %} 3
+        {% else %} 5
+        {% endif %}
 
-  - alias: "🚨 Notification: BIN MISSING"
-    if:
-      - condition: state
-        entity_id: counter.waste_verification_status
-        state: "2"
-    then:
-      - action: notify.mobile_app_your_phone
-        data:
-          title: "🗑️ Bins not out!"
-          message: "Tomorrow's collection: {{ target_colors }}. AI cannot see the bin!"
-          data:
-            image: /local/snapshots/waste_check.jpg
-            actions:
-              - action: "URI"
-                title: "Check Cameras"
-                uri: "/lovelace/cameras"
+  - alias: "🚨 Send Notifications"
+    variables:
+      msg_day: "{{ 'Today' if trigger.id == 'check_am' else 'Tomorrow' }}"
+    parallel:
+      - if:
+          - condition: state
+            entity_id: counter.waste_check_result
+            state: "1"
+        then:
+          - action: notify.mobile_app_your_device # REPLACE: with your device
+            data:
+              title: "🗑️ Waste: Bins Out"
+              message: "{{ msg_day }} collection: {{ search_colors }}. I can see the {{ search_fractions }} bins."
+              data:
+                image: /local/snapshots/waste_check.jpg
+      - if:
+          - condition: state
+            entity_id: counter.waste_check_result
+            state: "2"
+        then:
+          - action: notify.mobile_app_your_device
+            data:
+              title: "🚨 Waste: MISSING BINS"
+              message: "{{ msg_day }} collection: {{ search_colors }}. AI cannot find the {{ search_fractions }} bin!"
+              data:
+                image: /local/snapshots/waste_check.jpg
+                priority: high
+                ttl: 0
+      - if:
+          - condition: state
+            entity_id: counter.waste_check_result
+            state: "3"
+        then:
+          - action: notify.mobile_app_your_device
+            data:
+              title: "🗑️ Waste: Low Confidence"
+              message: "{{ msg_day }} collection: {{ search_colors }}. Detection unsure for {{ search_fractions }}. Check manually."
+              data:
+                image: /local/snapshots/waste_check.jpg
 
 mode: single
