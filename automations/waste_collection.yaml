@@ -25,7 +25,7 @@ triggers:
       - input_button.waste_test_button # REPLACE: with your test button
     to: null
 conditions:
-  - alias: 🔍 Sprawdź czy system nie jest w trybie serwisowym
+  - alias: "🔍 Check that the system is not in maintenance mode"
     condition: state
     entity_id: input_boolean.try_maintenance
     state: "off"
